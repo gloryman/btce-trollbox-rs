@@ -255,7 +255,7 @@ fn main_loop(btce_chs: Vec<String>, volume_limit: f64) {
     }
 
     // Spawn Volume monitor
-    if volume_limit > 0 {
+    if volume_limit > 0.0 {
         let _ = thread::Builder::new()
                                 .name("volume_monitor".to_string())
                                 .spawn(move || {
