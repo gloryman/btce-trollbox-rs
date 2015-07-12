@@ -255,11 +255,13 @@ fn main_loop(btce_chs: Vec<String>, volume_limit: f64) {
     }
 
     // Spawn Volume monitor
-    let _ = thread::Builder::new()
-                            .name("volume_monitor".to_string())
-                            .spawn(move || {
-                                volume_monitor(volume_limit, tx.clone())
-                            });
+    if volume_limit > 0 {
+        let _ = thread::Builder::new()
+                                .name("volume_monitor".to_string())
+                                .spawn(move || {
+                                    volume_monitor(volume_limit, tx.clone())
+                                });
+    }
 
     // Display results
     loop {
