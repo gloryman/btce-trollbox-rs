@@ -1,0 +1,14 @@
+[package]
+name = "trolbox"
+version = "0.1.0"
+authors = ["Viacheslav Ivanov <vyacheslav.ivanov@evoplus.ca>"]
+
+
+[dependencies]
+rustc-serialize = "0.3"
+term = "0.2"
+regex = "0.1"
+websocket = "*"
+hyper = "0.6"
+time = "*"
+docopt = "*"

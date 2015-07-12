@@ -1,0 +1,186 @@
+extern crate websocket;
+extern crate rustc_serialize;
+extern crate term;
+extern crate hyper;
+extern crate docopt;
+//extern crate time;
+
+use std::thread;
+use std::thread::sleep_ms;
+use std::sync::mpsc;
+use std::io::Read;
+use hyper::Client;
+use hyper::header::Connection;
+use rustc_serialize::json::{Json, decode};
+use docopt::Docopt;
+
+use lib::{BtceChatTransport, Message,
+    ChatMessage,
+    Tick, TicksList,
+    Console, BtcePipeSendeR, BtcePipeReceiver,
+    Sender, Receiver};
+
+mod lib;
+
+// - Static --------------------------------------------------------------------
+static USAGE: &' static str = "USAGE";
+
+// - Usage Struct --------------------------------------------------------------
+#[derive(RustDecodable, Debug)]
+struct Args {
+    arg_channels: Vec<String>,
+    flag_bolume : bool,
+}
+
+// -----------------------------------------------------------------------------
+
+fn deserealise_msg(js: &str) -> Option<ChatMessage> {
+    let jsobj = match Json::from_str(js) {
+        Ok(jsobj) => jsobj,
+        _ => return None
+    };
+    let obj = match jsobj.as_object() {
+        Some(obj) => obj,
+        _ => return None
+    };
+
+    let channel = &obj.get("channel")
+        .unwrap_or(&Json::String(String::new()))
+        .to_string()
+        .replace("\"", "")
+        .replace("chat_", "");
+    let channel = Some(channel.to_string());
+
+    let data = obj.get("data");
+    let jsobj = match Json::from_str(
+        &data.unwrap_or(&Json::String(String::new()))
+        .to_string()) {
+            Ok(jsobj) => jsobj,
+            _ => return None
+        };
+
+    let data = &jsobj.as_string();
+    let jsobj = match Json::from_str(data.unwrap_or("{}")) {
+        Ok(jsobj) => jsobj,
+        _ => return None
+    };
+
+    let data = &jsobj.as_string();
+    let mut msg: ChatMessage = match decode(data.unwrap_or("{}")) {
+        Ok(msg) => msg,
+        Err(_) => return None,
+    };
+
+    msg.channel = channel;
+    Some(msg)
+}
+
+
+fn listner(ch: &str, tx: BtcePipeSender) {
+    for ws in BtceChatTransport::new(ch) {
+        let (mut sender, mut receiver) = ws.split();
+
+        for inres in  receiver.incoming_messages::<Message>() {
+            let msg = match inres {
+                Ok(msg) => msg,
+                Err(e) => {
+                    println!("Error: {:?}", e);
+                    break;
+                }
+            };
+
+            match msg {
+                Message::Text(data) => {
+                    let bmsg = match deserealise_msg(&data) {
+:                        Some(val) => val,
+                        None => continue,
+                    };
+                    tx.send(Box::new(bmsg)).is_ok();
+                },
+                Message::Ping(data) => {
+                    println!("Send Pong: {:?}", data);
+                    sender.send_message(Message::Pong(data)).unwrap();
+                },
+                Message::Binary(data) => println!("Binary -> {:?}", data),
+                Message::Close(_) => break,
+                _ => continue,
+            }
+        }
+        let _ = sender.send_message(Message::Close(None));
+    }
+}
+
+fn volume_monitor(limit: f64, tx: BtcePipeSender) {
+    let http_client =  Client::new();
+    let mut last_tid = 0;
+    let mut delay = 1000;
+
+    loop {
+        sleep_ms(delay);
+        //println!("Fetch new result -> {:?}", time::SteadyTime::now());
+
+        let mut res = http_client.get("https://btc-e.com/api/3/trades/btc_usd?limit=2000")
+                                .header(Connection::close())
+                                .send().unwrap();
+        let mut body = String::new();
+        res.read_to_string(&mut body).unwrap();
+
+        let res = Json::from_str(&body).unwrap();
+        let res = res.as_object().unwrap();
+        let res = res.get("btc_usd").unwrap().as_array().unwrap();
+        let res: TicksList = res.iter()
+                                .map(|x| Tick::from_json(x))
+                                .filter(|x| x.is_some())
+                                .map(|x| x.unwrap())
+                                .filter(|x| x.tid > last_tid && x.amount > limit)
+                                .collect();
+
+        if res.len() == 0 {
+            delay += 500;
+            continue;
+        }
+
+        let tmp = res.first().clone().unwrap();
+        if tmp.tid == last_tid {
+            delay += 500;
+            continue;
+        }
+
+        delay = 1000;
+        last_tid = tmp.tid;
+        tx.send(Box::new(res.clone())).is_ok();
+    }
+}
+
+fn main2() {
+    let (tx, rx): (BtcePipeSender, BtcePipeReceiver) = mpsc::channel();
+
+    // Spawn Websocket listners
+    for ch in vec!["chat_en", "chat_ru", "chat_ch"] {
+        let c_tx = tx.clone();
+        thread::spawn(move || {
+            listner(ch, c_tx)
+        });
+    }
+
+    // Spawn Volume monitor
+    thread::spawn(move || {
+        volume_monitor(10.0, tx.clone());
+    });
+
+    // Display results
+    loop {
+        let rec = match rx.recv() {
+            Ok(val) => val,
+            Err(_) => continue,
+        };
+        rec.console();
+    }
+}
+
+fn main() {
+    let args: Args = Docopt::new(USAGE)
+                            .and_then(|d| d.decode())
+                            .unwrap_or_else(|e| e.exit());
+    println!("Args -> {:?}", args);
+}
