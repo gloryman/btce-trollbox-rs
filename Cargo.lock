@@ -1,5 +1,5 @@
 [root]
-name = "trolbox"
+name = "btce-trollbox"
 version = "0.1.0"
 dependencies = [
  "docopt 0.6.67 (registry+https://github.com/rust-lang/crates.io-index)",
