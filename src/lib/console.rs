@@ -3,7 +3,8 @@ extern crate term;
 use std::sync::mpsc::Sender;
 use std::sync::mpsc::Receiver;
 use super::regex::Regex;
-use std::hash::{Hash, SipHasher, Hasher};
+use std::hash::{Hash, Hasher};
+use std::collections::hash_map::DefaultHasher;
 
 use super::{TicksList, TickType, ChatMessage, };
 
@@ -113,7 +114,7 @@ pub type BtcePipeSender = Sender<Box<Console>>;
 pub type BtcePipeReceiver = Receiver<Box<Console>>;
 
 pub fn hash_color(st: &str) -> term::color::Color {
-    let mut hasher = SipHasher::new();
+    let mut hasher = DefaultHasher::new();
     st.hash(&mut hasher);
     let hashsum = hasher.finish();
 
