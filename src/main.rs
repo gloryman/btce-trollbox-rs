@@ -5,7 +5,8 @@ extern crate hyper;
 extern crate docopt;
 
 use std::thread;
-use std::thread::sleep_ms;
+use std::thread::sleep;
+use std::time::Duration;
 use std::sync::mpsc;
 use std::sync::{Mutex, Arc};
 use std::io::Read;
@@ -17,7 +18,7 @@ use docopt::Docopt;
 use lib::{BtceChatTransport, Message,
     ChatMessage,
     Tick, TicksList,
-    Console, BtcePipeSender, BtcePipeReceiver,
+    BtcePipeSender, BtcePipeReceiver,
     WsSender,
     Sender, Receiver};
 
@@ -37,9 +38,9 @@ Options:
 
 static TICK_FETCH_URL        : &'static str  = "https://btc-e.com/api/3/trades/btc_usd?limit=";
 static TICK_FETCH_ELEMENTS   : u64  = 2000;
-static TICK_FETCH_INIT_DELAY : u32  = 2000;
-static TICK_FETCH_DELAY_DELTA: u32  = 500;
-static TICK_FETCH_DELAY_LIMIT: u32  = 30000;
+static TICK_FETCH_INIT_DELAY : u64  = 2000;
+static TICK_FETCH_DELAY_DELTA: u64  = 500;
+static TICK_FETCH_DELAY_LIMIT: u64  = 30000;
 
 
 
@@ -97,10 +98,10 @@ fn pereodic_ping(sndr: Arc<Mutex<WsSender>>) {
     loop {
         match sndr.lock() {
             Ok(mut v) => {
-                match v.send_message(Message::Ping(vec![])) {
+                match v.send_message(&Message::ping(vec![])) {
                     Err(e) => {
                         println!("Websocket Error: {}", e);
-                        let _ = v.send_message(Message::Close(None));
+                        let _ = v.send_message(&Message::close());
                         return;
                     },
                     _ => (),
@@ -111,7 +112,7 @@ fn pereodic_ping(sndr: Arc<Mutex<WsSender>>) {
                 return;
             },
         };
-        sleep_ms(120_000);
+        sleep(Duration::from_secs(12));
     }
 }
 
@@ -123,26 +124,27 @@ fn listner(ch: &str, tx: BtcePipeSender) {
 
         thread::spawn(move || pereodic_ping(tmp));
 
-        for inres in  receiver.incoming_messages::<Message>() {
-            let msg = match inres {
+        for inres in  receiver.incoming_messages() {
+            let msg: Message = match inres {
                 Ok(msg) => msg,
                 Err(_) => break,
             };
 
-            match msg {
-                Message::Text(data) => {
-                    let bmsg = match deserealise_msg(&data) {
+            match msg.opcode {
+                websocket::message::Type::Text => {
+                    let data = std::str::from_utf8(&*msg.payload).unwrap();
+                    let bmsg = match deserealise_msg(data) {
                         Some(val) => val,
                         None => continue,
                     };
                     tx.send(Box::new(bmsg)).is_ok();
                 },
-                Message::Ping(data) => {
+                websocket::message::Type::Ping => {
                     match sender.lock() {
                         Ok(mut sender) => {
-                            match sender.send_message(Message::Pong(data)) {
+                            match sender.send_message(&Message::pong(msg.payload)) {
                                 Err(_) => {
-                                    let _ = sender.send_message(Message::Close(None));
+                                    let _ = sender.send_message(&Message::close());
                                     break;
                                 },
                                 _ => (),
@@ -151,7 +153,15 @@ fn listner(ch: &str, tx: BtcePipeSender) {
                         Err(_) => break,
                     }
                 },
-                Message::Close(_) => break,
+                websocket::message::Type::Close => {
+                    match sender.lock() {
+                        Ok(mut sender) => {
+                            let _ = sender.send_message(&Message::close());
+                        },
+                        Err(_) => break,
+                    }
+
+                },
                 _ => continue,
             }
         }
@@ -171,7 +181,6 @@ fn fetch_ticks(flimit: u64, vlimit: f64,
                         Ok(val) => val,
                         Err(_) => return default,
     };
-
     let mut body = String::new();
     match reply.read_to_string(&mut body) {
         Err(_) => return default,
@@ -196,7 +205,7 @@ fn fetch_ticks(flimit: u64, vlimit: f64,
     return res
 }
 
-fn get_new_delay(delay: u32) -> u32 {
+fn get_new_delay(delay: u64) -> u64 {
     let delay = delay + TICK_FETCH_DELAY_DELTA;
     if delay > TICK_FETCH_DELAY_LIMIT {
         return TICK_FETCH_DELAY_LIMIT
@@ -216,10 +225,9 @@ fn volume_monitor(vlimit: f64, tx: BtcePipeSender) {
     let mut delay = TICK_FETCH_INIT_DELAY;
 
     loop {
-        sleep_ms(delay);
+        sleep(Duration::from_millis(delay));
         let res = fetch_ticks(TICK_FETCH_ELEMENTS, vlimit,
                                     last_tid, http_client);
-
         match res.first() {
             Some(tic) => {
                 if tic.tid == last_tid {
@@ -234,7 +242,7 @@ fn volume_monitor(vlimit: f64, tx: BtcePipeSender) {
             },
         }
 
-        delay = (delay / res.len() as u32) / 100 * 100;
+        delay = (delay / res.len() as u64) / 100 * 100;
         if delay < TICK_FETCH_INIT_DELAY {
             delay = TICK_FETCH_INIT_DELAY
         }
@@ -257,10 +265,10 @@ fn main_loop(btce_chs: Vec<String>, volume_limit: f64) {
     // Spawn Volume monitor
     if volume_limit > 0.0 {
         let _ = thread::Builder::new()
-                                .name("volume_monitor".to_string())
-                                .spawn(move || {
-                                    volume_monitor(volume_limit, tx.clone())
-                                });
+                    .name("volume_monitor".to_string())
+                    .spawn(move || {
+                        volume_monitor(volume_limit, tx.clone())
+                    });
     }
 
     // Display results
@@ -275,8 +283,8 @@ fn main_loop(btce_chs: Vec<String>, volume_limit: f64) {
 
 fn main() {
     let args: Args = Docopt::new(USAGE)
-                            .and_then(|d| d.decode())
-                            .unwrap_or_else(|e| e.exit());
+                        .and_then(|d| d.decode())
+                        .unwrap_or_else(|e| e.exit());
 
     main_loop(args.flag_channels, args.flag_volume);
 }

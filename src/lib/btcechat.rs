@@ -1,6 +1,7 @@
 extern crate websocket;
 
-use std::thread::sleep_ms;
+use std::thread::sleep;
+use std::time::Duration;
 use websocket::stream::WebSocketStream;
 use websocket::client::request::Url;
 use websocket::client;
@@ -11,13 +12,13 @@ pub use websocket::result::WebSocketError;
 static BTCE_CHAT_URL: &'static str = "wss://ws.pusherapp.com/app/4e0ebd7a8b66fa3554a4?protocol=6&client=js&version=2.0.0&flash=false";
 //static BTCE_CHAT_SUBSCRIBE: &'static str = "{\"event\":\"pusher:subscribe\",\"data\":{\"channel\": \"{}\"}}";
 
-pub type WsSender = client::sender::Sender<WebSocketStream>;
-pub type WsReceiver = client::receiver::Receiver<WebSocketStream>;
+pub type WsSender = client::Sender<WebSocketStream>;
+pub type WsReceiver = client::Receiver<WebSocketStream>;
 pub type WsClient = Client<DataFrame, WsSender, WsReceiver>;
 
 /// Build complite JSON string for BTC-E subscribe message
 /// Wrap set of concatinations in to function call
-fn build_subscription_message(channel: String) -> Message {
+fn build_subscription_message<'a>(channel: String) -> Message<'a> {
     let mut result: String =
             "{\"event\":\"pusher:subscribe\",\"data\":{\"channel\": \""
             .to_owned();
@@ -25,7 +26,7 @@ fn build_subscription_message(channel: String) -> Message {
 
     result.push_str(&channel);
     result.push_str(end);
-    Message::Text(result)
+    Message::text(result)
 }
 
 #[derive(Clone, Debug, RustcDecodable, RustcEncodable)]
@@ -82,7 +83,7 @@ impl Iterator for BtceChatTransport {
         loop {
             // TODO: Add failures limit
             if self.failures > 0 {
-                sleep_ms(2000);
+                sleep(Duration::from_secs(2));
             };
 
             let request = match Client::connect(url.clone()) {
@@ -103,7 +104,7 @@ impl Iterator for BtceChatTransport {
 
             let mut ws = response.begin();
             let msg = build_subscription_message(self.channel.clone());
-            match ws.send_message(msg) {
+            match ws.send_message(&msg) {
                 Ok(_) => (),
                 Err(_) => {
                     self.failures += 1;
